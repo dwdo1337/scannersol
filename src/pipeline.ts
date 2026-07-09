@@ -10,7 +10,7 @@ import { loadFilters } from './configStore.js';
 import { getCachedWallet, saveWalletCache } from './walletCache.js';
 import { alreadyAlerted, markAlerted } from './dedupe.js';
 import { allowAlert } from './rateLimit.js';
-import { bumpMatched } from './bot.js';
+import { bumpMatched, bumpFreshPassed, bumpFundingChecked } from './bot.js';
 
 export interface SwapEvent {
   signature: string;
@@ -48,6 +48,7 @@ export async function handleSwap(swap: SwapEvent) {
     }
 
     if (txCount >= cfg.maxTxCount) return; // not fresh, skip expensive funding lookup
+    bumpFreshPassed();
 
     const nowSec = Date.now() / 1000;
     const walletAgeMin = firstSeen != null ? (nowSec - firstSeen) / 60 : null;
@@ -60,6 +61,7 @@ export async function handleSwap(swap: SwapEvent) {
     // hit a 429 last time) - otherwise a transient failure gets baked in
     // as a permanent false negative for the rest of the cache TTL.
     const needsFundingLookup = !cached || cached.funded_resolved === 0;
+    bumpFundingChecked();
 
     if (needsFundingLookup) {
       const funding = await resolveFunding(swap.buyer, oldestSigs);

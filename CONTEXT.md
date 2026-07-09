@@ -1,109 +1,192 @@
-# freshieTG — Fresh Wallet Chain-Wide Scanner
+﻿# freshieTG — Fresh Wallet Chain-Wide Scanner
 
 ## Goal
-Telegram bot that watches ALL Solana DEX buys chain-wide (not one token) and
-alerts when a buy matches user-defined "freshness" filters. Not a per-token
-tracker — a global firehose + filter engine.
+Telegram bot that watches Solana buys chain-wide (Pump.fun + PumpSwap) and
+alerts when a buy matches user-defined "freshness" filters (tx count,
+wallet age, buy size, CEX-funded origin). Not a per-token tracker — a
+global firehose + filter engine, fully tunable live via Telegram commands.
 
-## Core pipeline
-1. WSS subscribe to swap logs on major DEX program IDs (Pump.fun, PumpSwap,
-   Raydium AMM v4/CPMM, Meteora DBC/DLMM) via Helius — catches every buy tx
-   on-chain in real time.
-2. Parse each tx: buyer wallet, mint, SOL in, tokens out, pool reserves
-   before/after (for % bought calc).
-3. Cheap pre-filter: getSignaturesForAddress(buyer, limit~10) — reject if
-   tx count exceeds max threshold BEFORE doing anything expensive.
-4. For wallets passing step 3: resolve funding source (first inbound SOL
-   transfer) + check against CEX label list / Helius wallet identity API.
-5. Run full metric set (below) against user config.
-6. If match -> Telegram alert with wallet, metrics, buy link.
+## CURRENT ARCHITECTURE (as of 2026-07-09) — READ THIS FIRST
+This pivoted significantly from the original WSS-firehose design. Do NOT
+assume the "Build order" section below reflects current reality — see
+Status log for what's actually true today.
 
-## Storage
-SQLite. Tables: wallets_cache (address, first_seen, tx_count, funded_by,
-funded_label, last_checked), alerts_sent (dedupe), config (active filter set).
+- **Ingestion: Helius Enhanced Webhooks, not WSS.** The original plan (WSS
+  logsSubscribe + call Enhanced Transactions API ourselves per swap) hit a
+  hard wall: even narrowed to Pump.fun+PumpSwap, raw WSS threw ~450-560
+  swaps/sec at us, but Helius rate-limited enrichment calls to ~8/sec,
+  causing an infinite silent queue (zero errors, zero output, just endless
+  backlog). Switched to Helius Enhanced Webhooks instead — Helius does the
+  parsing/filtering server-side by program ID + tx type, and pushes
+  already-decoded swap events to our own HTTP endpoint. This eliminates the
+  firehose problem entirely: we only ever receive real swaps on our two
+  target programs, pre-parsed.
+- **Deployed on Render** (not run locally). Repo: pushed to GitHub at
+  https://github.com/dwdo1337/scannersol.git, `render.yaml` defines a free
+  web service (`freshietg`), auto-builds via `npm install && npm run
+  build`, starts via `npm start`. Live URL: https://scannersol.onrender.com
+  (confirmed healthy via GET /health -> "ok").
+- **Storage: node:sqlite (built-in), not better-sqlite3.** better-sqlite3
+  needed a native rebuild that hung/stalled repeatedly on this Windows
+  machine. Switched to Node's built-in `node:sqlite` (DatabaseSync) —
+  zero native compilation, same schema/behavior.
+- **Webhook receiver**: src/webhookServer.ts, Express app, POST
+  `/webhook/<WEBHOOK_SECRET>`, acks 200 immediately then processes async.
+  GET /health for uptime checks.
+- **Webhook registration**: scripts/registerWebhook.mjs — one-off script,
+  run manually with the live Render URL as arg. Registers a Helius
+  "enhanced" webhook, type SWAP, on Pump.fun (6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P)
+  + PumpSwap (pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA).
+  **Already registered** as of 2026-07-09: webhookID
+  7e5aedad-1318-44a7-9234-fd1371719921, pointed at
+  https://scannersol.onrender.com/webhook/7997275b7982436a816e6948b1452617,
+  active:true. Re-running the script again will register a SECOND webhook
+  (Helius doesn't dedupe) — if ever re-registering, delete the old
+  webhookID first via Helius's API/dashboard.
+- **feed.ts (raw WSS) is now dead code / fallback only** — kept in the repo
+  in case webhooks ever need a local fallback, but NOT used in production.
+  Same for parseSwap.ts (Enhanced Transactions API single-tx decode) —
+  webhooks arrive pre-parsed now, so this path isn't in the live flow.
+  `pipeline.ts` is the shared core logic both paths would use.
 
-## Full metric/filter catalogue (all configurable, toggle any combo)
+## Core pipeline (webhookServer.ts -> pipeline.ts)
+1. Helius webhook POST hits `/webhook/<secret>` with pre-parsed SWAP events
+   (buyer/mint/solIn extracted in webhookServer.ts's extractSwap()).
+2. Bounded concurrency gate: max 6 concurrent enrichment lookups; anything
+   over that is dropped (not queued) — bumpDropped() stat tracks this.
+3. pipeline.ts handleSwap(): cheap freshness pre-filter
+   (getSignaturesForAddress, reject if tx count >= maxTxCount) before any
+   expensive lookup.
+4. For wallets passing freshness: resolve funding source (first inbound
+   SOL transfer + walk to sender) + Helius wallet-identity API for
+   CEX/entity labels (cached in-memory 6h TTL, see cexLabels.ts).
+5. matchesFilters() against live-loaded FilterConfig (SQLite-backed,
+   editable via Telegram).
+6. If match: dedupe check (30 min window per wallet+mint) + rate limit
+   (maxAlertsPerMin, default 20) -> Telegram alert.
 
-### Wallet age / history
-- max total tx count (lifetime) — "under N transactions"
-- wallet age in minutes/hours/days since first-ever tx
-- first-ever token buy (never bought any SPL token before this one)
-- max SOL balance (fresh wallets are usually thin)
+## Storage (node:sqlite, freshie.db in project root)
+- wallets_cache: address, first_seen, tx_count, funded_by, funded_label,
+  funded_resolved (0/1 - was CEX lookup actually resolved vs transient
+  failure, so a 429 doesn't get baked in as a permanent false negative),
+  last_checked. 10 min cache TTL.
+- alerts_sent: wallet+mint dedupe, 30 min window.
+- config: key/value store for live FilterConfig (persisted across
+  restarts, editable via /setfilters).
 
-### Funding source
-- funded directly from a labeled CEX (Binance/Coinbase/Kraken/OKX/Bybit/etc)
-- funded from a wallet that funded N other wallets recently (sybil/insider
-  cluster — same funder feeding multiple "fresh" buyers)
-- funding amount close to buy amount (funded just enough to make this buy)
-- time gap between funding tx and buy tx (funded <X min before buying =
-  "just woke up to ape this")
+## Telegram bot (src/bot.ts, node-telegram-bot-api, polling mode)
+- /status — uptime, swaps seen, matched, dropped
+- /getfilters — dump current FilterConfig as JSON
+- /setfilters <field> <value> — live-edit any filter field, persists to
+  SQLite immediately, takes effect on the next swap (pipeline.ts reloads
+  config every call, no restart needed)
+- Settable fields: maxTxCount, maxWalletAgeMin, minBuySol, maxBuySol,
+  requireCexFunded, minSolBalancePct, maxAlertsPerMin
 
-### Buy behavior
-- buy size as % of pool liquidity at time of buy
-- buy size as % of circulating/total supply
-- absolute SOL amount spent (min/max range)
-- buy rank (1st/5th/50th buyer of this specific token, if useful later)
-- slippage tolerance used (high slippage = urgency/bot-like)
+## Full metric/filter catalogue (design reference — not all wired yet)
+### Implemented in filters.ts / matchesFilters():
+- maxTxCount, maxWalletAgeMin, minBuySol, maxBuySol, requireCexFunded,
+  maxAlertsPerMin
+### Designed but NOT yet wired into matchesFilters() (future):
+- minSolBalancePct (field exists in FilterConfig, not used in matching yet)
+- sybil-cluster detection (same funder feeding multiple fresh wallets)
+- buy rank (1st/5th/50th buyer of a specific token)
+- token-side context (token age, liquidity size, dev/insider wallet excl.)
+- first-ever-token-purchase check
+- funding-amount-vs-buy-amount proximity, funding-to-buy time gap
 
-### Token-side context (optional, secondary)
-- token age (how new is the token itself — pairs with wallet freshness)
-- token liquidity size (avoid picking up dead/illiquid pools)
-- exclude known dev/insider wallets if token has public info
-
-### Meta / noise filters
-- exclude wallets that already triggered an alert in last X min (dedupe)
-- exclude known MEV/bot/router addresses
-- max alerts per minute (rate limit for your own sanity)
+## Known past bugs (fixed, keep for reference — don't reintroduce)
+1. **Silent infinite queue (WSS era)**: unbounded queueing behind an 8/sec
+   rate limiter with 450+/sec inflow = seen count climbing, matched=0,
+   zero errors, zero [check] lines. Fixed by dropping excess instead of
+   queueing (bounded concurrency gate). This class of bug produces NO
+   error output — if [check] lines ever stop appearing while seen keeps
+   climbing, suspect this exact pattern again.
+2. **Reconnect storm (WSS era)**: fixed 3s reconnect delay hammered
+   Helius's WSS connection-rate limit -> perpetual 429 on handshake, looked
+   like "network flakiness" but was self-inflicted. Fixed with exponential
+   backoff (3s->6s->12s->24s->cap 30s). Moot now since webhooks replaced
+   WSS, but the backoff logic is still in feed.ts as a reference/fallback.
+3. **ENRICHMENT_KEYS accidentally scoped to exhausted keys**: a global
+   find-replace during the keys-1/2-exhausted fix (switching feed to use
+   keys 3/4) accidentally also changed ENRICHMENT_KEYS from all 4 keys
+   down to just 2 — coincidentally the SAME exhausted pair — causing "all
+   Helius keys failed" in production even after adding valid new keys.
+   Root-caused and fixed 2026-07-09, committed + pushed
+   (commit 5f39bb3). **Always grep for all usages of a keys array after
+   any find-replace touching key selection.**
+4. **Helius key rotation**: original keys 1 & 2 got quota-exhausted during
+   WSS testing/restarts (confirmed by user checking Helius dashboard).
+   Original keys 3 & 4 returned 401 (were invalid/placeholder). User
+   supplied two NEW real keys which are now in .env as HELIUS_KEY_3
+   (d12eeeaa-fd68-45ff-a55b-c932377b4a54) and HELIUS_KEY_4
+   (1bf5e4bd-2858-4985-a5ba-2479c16f6a27). Keys 1/2 still in .env too
+   (ad6eeb95..., 9e1a445d...) — status unknown, may still be
+   quota-exhausted, ENRICHMENT_KEYS round-robins across all 4 regardless
+   so this self-heals as keys individually recover.
+5. **CEX label list**: originally a hand-written static address list
+   (unverifiable placeholders — flagged as a real accuracy risk). Replaced
+   entirely with live Helius wallet-identity API lookups
+   (api.helius.xyz/v1/wallet/{address}/identity), cached 6h in-memory.
+   Static list removed.
+6. **better-sqlite3 native build hung** on this Windows machine (silent,
+   very long npm rebuild with no output, never confirmed to finish).
+   Replaced with node:sqlite (Node's built-in, no native compilation).
+7. **IPv6/Cloudflare route issue**: this host's IPv6 path to
+   api.helius.xyz (Cloudflare-fronted) is broken while IPv4 works; Node's
+   fetch sometimes raced into the dead IPv6 path -> ETIMEDOUT. Fixed with
+   `dns.setDefaultResultOrder('ipv4first')` at the top of index.ts.
 
 ## Data sources
-- Helius WSS logsSubscribe — real-time swap detection (primary feed)
+- Helius Enhanced Webhooks — primary ingestion (SWAP type, Pump.fun +
+  PumpSwap program IDs)
 - Helius getSignaturesForAddress — cheap tx-count/age pre-filter
-- Helius parsed transaction API — decode swap + funding transfers
-- Helius wallet identity / batch-identity API — CEX/entity labels
-  (https://api.helius.xyz/v1/wallet/{address}/identity)
-- Static fallback CEX address list (Binance/Coinbase/Kraken hot wallets)
-  cached locally in case identity API misses one
+- Helius getTransaction — funding-source walk (find first inbound SOL
+  transfer + sender)
+- Helius wallet-identity API — CEX/entity labels, live lookup + 6h cache
 
 ## Stack
-TypeScript + Node. Reasons: best Helius SDK support, reuse patterns from
-STBAE (wallet.ts Helius pipeline) and solwatch-v2 (tx parsing approach).
-node-telegram-bot-api or grammy for delivery. better-sqlite3 for storage.
+TypeScript + Node, deployed on Render (free tier). express (webhook
+server), node-telegram-bot-api (bot, polling mode), node:sqlite (storage,
+built-in — no native deps). dotenv for env vars.
 
-## Build order
-1. WSS listener + raw swap parser (no filters yet, just log everything)
-2. SQLite wallet cache + cheap freshness pre-filter
-3. Funding-source resolver + CEX labeling
-4. Filter engine reading a config object (all metrics above as toggles)
-5. Telegram bot: /setfilters, /status, alert formatting
-6. Tune thresholds against live data, add rate limiting
-
-## Status log
-- [done] research + architecture decided
-- [done] 4 Helius keys pooled: 2 dedicated to parallel WSS feed (dedupe by
-  signature, 5min TTL), all 4 in round-robin enrichment pool with 429
-  fallback (src/rpcPool.ts)
-- [done] phase 1 scaffold: src/config.ts, src/rpcPool.ts, src/freshness.ts
-  (cheap tx-count pre-filter, no deep paging), src/feed.ts (dual WSS,
-  watches Raydium v4/CPMM + Pump.fun + PumpSwap), src/index.ts (test wiring)
-- [done] phase 2: src/parseSwap.ts (Helius Enhanced Tx API decode -> buyer,
-  mint, solIn, tokensOut), src/funding.ts (walks oldest signatures to find
-  first inbound SOL transfer + sender), src/cexLabels.ts (static label map
-  - PLACEHOLDER addresses, need real verified Solscan-labeled hot wallets
-  before relying on requireCexFunded), src/filters.ts (FilterConfig +
-  matchesFilters, all metrics toggleable), src/telegram.ts (sendAlert +
-  formatAlert, no-ops with console log if bot token/chat id not in .env)
-- [done] full pipeline wired in index.ts: feed -> parseSwapTx -> freshness
-  pre-filter -> resolveFunding -> matchesFilters -> telegram/log. Verified
-  running live against real chain swaps (typecheck clean, ran ~30s, saw
-  real buyer wallets scored with tx count/age/buy size/funding, no crashes,
-  transient fetch ECONNRESET on getTransaction handled gracefully by
-  existing try/catch + continues fine)
-- [next] SQLite persistence (wallets_cache, alerts_sent dedupe, config
-  table) - currently everything is in-memory/hardcoded DEFAULT_FILTERS
-- [next] REPLACE placeholder CEX addresses in cexLabels.ts with verified
-  ones (Helius wallet identity API or a maintained Solscan label export)
-- [next] Telegram bot commands (/setfilters, /status) instead of hardcoded
-  DEFAULT_FILTERS - currently TELEGRAM_BOT_TOKEN/CHAT_ID must be in .env
-- [next] rate limiting / max alerts per min, sybil-cluster detection
-  (same funder feeding multiple fresh wallets)
-- keys live in .env (gitignored), never printed in chat
+## Status log (chronological, most recent last)
+- [done] Original research across 5 reference repos (all single/few-wallet
+  trackers, not chain-wide scanners — nothing directly reusable
+  architecturally, confirmed on second look too)
+- [done] Phase 1-2 WSS scaffold built and proven working locally (feed.ts,
+  parseSwap.ts, funding.ts, filters.ts, telegram.ts) — this code still
+  exists but is NOT the production path anymore
+- [done] SQLite persistence, dedupe, rate limiting, Telegram bot commands
+  added on top of WSS design
+- [done] Hit real production-breaking bugs at scale (silent infinite
+  queue, reconnect storm) — root-caused and fixed, see "Known past bugs"
+- [done] **Architecture pivot**: abandoned WSS-firehose entirely, moved to
+  Helius Enhanced Webhooks (webhookServer.ts, pipeline.ts). This is the
+  actual production design now.
+- [done] Moved off better-sqlite3 (native build hell on this machine) onto
+  node:sqlite
+- [done] Repo pushed to GitHub (dwdo1337/scannersol), deployed to Render
+  as a free web service (render.yaml)
+- [done] Found and fixed the ENRICHMENT_KEYS-scoped-to-exhausted-keys bug
+  (commit 5f39bb3, pushed 2026-07-09)
+- [done] Confirmed Render deploy live and healthy: GET
+  https://scannersol.onrender.com/health -> "ok"
+- [done] Registered the Helius webhook against the live Render URL for the
+  first time ever (webhookID 7e5aedad-1318-44a7-9234-fd1371719921) —
+  **this had never been done before this session**, meaning no swap data
+  had ever reached production prior to now, regardless of what earlier
+  bot.log / bot_out.log files show (those were from local WSS test runs)
+- [next] Confirm live alerts actually flowing: ask user to run /status in
+  Telegram (bot runs in polling mode, reachable independent of webhook
+  traffic) and watch for seen/matched counts climbing
+- [next] Wire minSolBalancePct into matchesFilters() (field exists,
+  unused)
+- [next] Sybil-cluster detection (same funder -> multiple fresh wallets)
+- [next] Consider deleting/checking old bot.log, bot.err.log, bot_out.log,
+  bot_err.log files locally — they're from dead local WSS test runs and
+  could confuse future debugging if mistaken for production logs
+- keys live in .env (gitignored) AND in Render's env var dashboard
+  (render.yaml declares them sync:false, meaning Render prompts for them
+  in its UI — confirm they were actually entered there, since a value only
+  existing in local .env does NOT reach the deployed service)

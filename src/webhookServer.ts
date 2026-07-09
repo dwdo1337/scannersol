@@ -8,7 +8,7 @@
 // before it ever reaches us.
 import express from 'express';
 import { handleSwap } from './pipeline.js';
-import { bumpSeen, bumpDropped } from './bot.js';
+import { bumpSeen, bumpDropped, bumpExtractFailed } from './bot.js';
 
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? '';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -65,7 +65,10 @@ export function startWebhookServer() {
     for (const tx of events) {
       bumpSeen();
       const swap = extractSwap(tx);
-      if (!swap) continue;
+      if (!swap) {
+        bumpExtractFailed();
+        continue;
+      }
 
       if (activeLookups >= MAX_CONCURRENT_LOOKUPS) {
         bumpDropped();
