@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } from './config.js';
 import { loadFilters, saveFilters } from './configStore.js';
-import { FilterConfig } from './filters.js';
+import { DEFAULT_FILTERS, FilterConfig } from './filters.js';
 import { getFailedSamples } from './webhookServer.js';
 
 let bot: TelegramBot | null = null;
@@ -64,6 +64,36 @@ export function startBot() {
     return null;
   }
   bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+
+  const COMMAND_MENU = [
+    { command: 'help', description: 'List all commands' },
+    { command: 'status', description: 'Pipeline stats and uptime' },
+    { command: 'getfilters', description: 'Show current alert filters' },
+    { command: 'setfilters', description: 'Set a filter: /setfilters <field> <value>' },
+    { command: 'resetfilters', description: 'Reset all filters to defaults' },
+  ];
+  bot.setMyCommands(COMMAND_MENU).catch((err) =>
+    console.error('[telegram] failed to register command menu:', err),
+  );
+
+  const HELP_TEXT =
+    '<b>Available commands</b>\n\n' +
+    '/status — uptime and pipeline stats (swaps seen, dropped, matched, etc.)\n' +
+    '/getfilters — show the active alert filters as JSON\n' +
+    '/setfilters &lt;field&gt; &lt;value&gt; — update one filter\n' +
+    `   fields: ${SETTABLE.join(', ')}\n` +
+    '   use "null" to clear a numeric filter, e.g. /setfilters minBuySol null\n' +
+    '/resetfilters — restore all filters to their defaults\n' +
+    '/help — show this message';
+
+  bot.onText(/\/help|\/start/, (msg) => {
+    bot!.sendMessage(msg.chat.id, HELP_TEXT, { parse_mode: 'HTML' });
+  });
+
+  bot.onText(/\/resetfilters/, (msg) => {
+    saveFilters({ ...DEFAULT_FILTERS });
+    bot!.sendMessage(msg.chat.id, 'Filters reset to defaults.');
+  });
 
   bot.onText(/\/status/, (msg) => {
     const uptimeMin = Math.round((Date.now() - stats.startedAt) / 60000);

@@ -1,4 +1,4 @@
-﻿import db from './db.js';
+import db from './db.js';
 import { DEFAULT_FILTERS, FilterConfig } from './filters.js';
 
 const KEY = 'active_filters';
@@ -59,7 +59,7 @@ async function redisSet(cfg: FilterConfig): Promise<void> {
         Authorization: `Bearer ${UPSTASH_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(JSON.stringify(cfg)),
+      body: JSON.stringify(cfg),
     });
     if (!res.ok) throw new Error(`Upstash SET ${res.status}`);
   } catch (err) {
