@@ -26,6 +26,14 @@ try {
   // column already exists, ignore
 }
 
+// Migration: older DBs won't have funded_at yet - needed for the
+// funding-window filters (minMinutesSinceFunding / maxMinutesSinceFunding).
+try {
+  db.exec(`ALTER TABLE wallets_cache ADD COLUMN funded_at INTEGER;`);
+} catch {
+  // column already exists, ignore
+}
+
 db.exec(`
 
   CREATE TABLE IF NOT EXISTS alerts_sent (

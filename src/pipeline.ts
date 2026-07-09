@@ -55,6 +55,7 @@ export async function handleSwap(swap: SwapEvent) {
 
     let cexLabel = cached?.funded_label ?? null;
     let fundedBy = cached?.funded_by ?? null;
+    let fundedAt = cached?.funded_at ?? null;
 
     // Re-run the funding/CEX lookup if we have no cache entry, OR if the
     // cached entry's funding lookup was never actually resolved (e.g. it
@@ -67,18 +68,20 @@ export async function handleSwap(swap: SwapEvent) {
       const funding = await resolveFunding(swap.buyer, oldestSigs);
       cexLabel = funding.cexLabel;
       fundedBy = funding.fundedBy;
+      fundedAt = funding.fundedAt;
       saveWalletCache({
         address: swap.buyer,
         first_seen: firstSeen,
         tx_count: txCount,
         funded_by: fundedBy,
         funded_label: cexLabel,
+        funded_at: fundedAt,
         funded_resolved: funding.cexResolved ? 1 : 0,
       });
     }
 
     const isMatch = matchesFilters(
-      { txCount, walletAgeMin, buySol: swap.solIn, cexLabel },
+      { txCount, walletAgeMin, buySol: swap.solIn, cexLabel, fundedAt },
       cfg,
     );
 

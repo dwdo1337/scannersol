@@ -53,7 +53,8 @@ const SETTABLE: (keyof FilterConfig)[] = [
   'maxWalletAgeMin',
   'minBuySol',
   'maxBuySol',
-  'requireCexFunded',
+  'minMinutesSinceFunding',
+  'maxMinutesSinceFunding',
   'minSolBalancePct',
   'maxAlertsPerMin',
 ];
@@ -66,10 +67,13 @@ export function startBot() {
   bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
   const COMMAND_MENU = [
+    { command: 'start', description: 'Show the button menu' },
     { command: 'help', description: 'List all commands' },
     { command: 'status', description: 'Pipeline stats and uptime' },
     { command: 'getfilters', description: 'Show current alert filters' },
     { command: 'setfilters', description: 'Set a filter: /setfilters <field> <value>' },
+    { command: 'setfunding', description: 'Allowed CEX sources: /setfunding Binance,OKX' },
+    { command: 'resetfunding', description: 'Clear funding-source restriction' },
     { command: 'resetfilters', description: 'Reset all filters to defaults' },
   ];
   bot.setMyCommands(COMMAND_MENU).catch((err) =>
@@ -83,11 +87,89 @@ export function startBot() {
     '/setfilters &lt;field&gt; &lt;value&gt; — update one filter\n' +
     `   fields: ${SETTABLE.join(', ')}\n` +
     '   use "null" to clear a numeric filter, e.g. /setfilters minBuySol null\n' +
+    '/setfunding &lt;list&gt; — comma-separated CEX names to require, e.g. /setfunding Binance,OKX\n' +
+    '/resetfunding — accept any/unknown funding source again\n' +
     '/resetfilters — restore all filters to their defaults\n' +
     '/help — show this message';
 
-  bot.onText(/\/help|\/start/, (msg) => {
+  const MAIN_MENU = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⚙️ Filters', callback_data: 'menu_filters' }, { text: '🏦 Funding', callback_data: 'menu_funding' }],
+        [{ text: '📊 Status', callback_data: 'menu_status' }, { text: '↩️ Reset filters', callback_data: 'menu_reset' }],
+        [{ text: '❓ Help', callback_data: 'menu_help' }],
+      ],
+    },
+  };
+
+  bot.onText(/\/start/, (msg) => {
+    bot!.sendMessage(msg.chat.id, 'freshieTG — fresh Solana wallet tracker. What do you need?', MAIN_MENU);
+  });
+
+  bot.onText(/\/help/, (msg) => {
     bot!.sendMessage(msg.chat.id, HELP_TEXT, { parse_mode: 'HTML' });
+  });
+
+  bot.on('callback_query', async (query) => {
+    const chatId = query.message?.chat.id;
+    if (!chatId) return;
+    bot!.answerCallbackQuery(query.id).catch(() => {});
+    switch (query.data) {
+      case 'menu_filters': {
+        const cfg = loadFilters();
+        bot!.sendMessage(
+          chatId,
+          `<pre>${JSON.stringify(cfg, null, 2)}</pre>\nUse /setfilters &lt;field&gt; &lt;value&gt; to change one.\nFields: ${SETTABLE.join(', ')}`,
+          { parse_mode: 'HTML' },
+        );
+        break;
+      }
+      case 'menu_funding': {
+        const cfg = loadFilters();
+        bot!.sendMessage(
+          chatId,
+          `Allowed funding sources: ${cfg.allowedFundingSources?.length ? cfg.allowedFundingSources.join(', ') : 'any'}\n` +
+            'Set with /setfunding Binance,OKX — clear with /resetfunding',
+        );
+        break;
+      }
+      case 'menu_status': {
+        const uptimeMin = Math.round((Date.now() - stats.startedAt) / 60000);
+        bot!.sendMessage(
+          chatId,
+          `Uptime: ${uptimeMin}m\nSwaps seen: ${stats.seen}\nMatched: ${stats.matched}`,
+        );
+        break;
+      }
+      case 'menu_reset': {
+        saveFilters({ ...DEFAULT_FILTERS });
+        bot!.sendMessage(chatId, 'Filters reset to defaults.');
+        break;
+      }
+      case 'menu_help': {
+        bot!.sendMessage(chatId, HELP_TEXT, { parse_mode: 'HTML' });
+        break;
+      }
+    }
+  });
+
+  bot.onText(/\/setfunding (.+)/, (msg, match) => {
+    const raw = match?.[1]?.trim();
+    const cfg = loadFilters();
+    if (!raw || raw.toLowerCase() === 'none') {
+      cfg.allowedFundingSources = null;
+    } else {
+      cfg.allowedFundingSources = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    saveFilters(cfg);
+    bot!.sendMessage(msg.chat.id, `Allowed funding sources: ${cfg.allowedFundingSources?.join(', ') ?? 'any'}`);
+  });
+
+  bot.onText(/\/resetfunding/, (msg) => {
+    const cfg = loadFilters();
+    cfg.allowedFundingSources = null;
+    saveFilters(cfg);
+    bot!.sendMessage(msg.chat.id, 'Funding-source restriction cleared — any/unknown source accepted.');
   });
 
   bot.onText(/\/resetfilters/, (msg) => {
