@@ -59,6 +59,27 @@ const SETTABLE: (keyof FilterConfig)[] = [
   'maxAlertsPerMin',
 ];
 
+// Human-readable filter summary for Telegram, instead of a raw JSON dump.
+// "—" marks a filter that's off/unset.
+function formatFilters(cfg: FilterConfig): string {
+  const src = cfg.allowedFundingSources?.length ? cfg.allowedFundingSources.join(', ') : 'any';
+  const line = (label: string, val: number | string | null) =>
+    `${label}: <b>${val === null ? '—' : val}</b>`;
+  return (
+    '<b>Active filters</b>\n\n' +
+    `${line('Max tx count', cfg.maxTxCount)}\n` +
+    `${line('Max wallet age (min)', cfg.maxWalletAgeMin)}\n` +
+    `${line('Min buy (SOL)', cfg.minBuySol)}\n` +
+    `${line('Max buy (SOL)', cfg.maxBuySol)}\n` +
+    `${line('Funding sources', src)}\n` +
+    `${line('Min mins since funding', cfg.minMinutesSinceFunding)}\n` +
+    `${line('Max mins since funding', cfg.maxMinutesSinceFunding)}\n` +
+    `${line('Min pool balance %', cfg.minSolBalancePct)}\n` +
+    `${line('Max alerts/min', cfg.maxAlertsPerMin)}\n\n` +
+    'Change with /setfilters &lt;field&gt; &lt;value&gt; or /setfunding &lt;list&gt;'
+  );
+}
+
 export function startBot() {
   if (!TELEGRAM_BOT_TOKEN) {
     console.log('[telegram] no bot token set, skipping bot command listener');
@@ -116,12 +137,7 @@ export function startBot() {
     bot!.answerCallbackQuery(query.id).catch(() => {});
     switch (query.data) {
       case 'menu_filters': {
-        const cfg = loadFilters();
-        bot!.sendMessage(
-          chatId,
-          `<pre>${JSON.stringify(cfg, null, 2)}</pre>\nUse /setfilters &lt;field&gt; &lt;value&gt; to change one.\nFields: ${SETTABLE.join(', ')}`,
-          { parse_mode: 'HTML' },
-        );
+        bot!.sendMessage(chatId, formatFilters(loadFilters()), { parse_mode: 'HTML' });
         break;
       }
       case 'menu_funding': {
@@ -192,10 +208,7 @@ export function startBot() {
   });
 
   bot.onText(/\/getfilters/, (msg) => {
-    const cfg = loadFilters();
-    bot!.sendMessage(msg.chat.id, `<pre>${JSON.stringify(cfg, null, 2)}</pre>`, {
-      parse_mode: 'HTML',
-    });
+    bot!.sendMessage(msg.chat.id, formatFilters(loadFilters()), { parse_mode: 'HTML' });
   });
 
   bot.onText(/\/rawsample/, (msg) => {

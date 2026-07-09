@@ -3,6 +3,20 @@ import { DEFAULT_FILTERS, FilterConfig } from './filters.js';
 
 const KEY = 'active_filters';
 
+// Whitelist merge: strips any stale/removed fields (e.g. the old
+// requireCexFunded boolean) that may still be sitting in local SQLite or
+// Upstash from before the schema changed, instead of letting them leak
+// back in via a plain object spread.
+function sanitize(raw: any): FilterConfig {
+  const out = { ...DEFAULT_FILTERS };
+  for (const key of Object.keys(DEFAULT_FILTERS) as (keyof FilterConfig)[]) {
+    if (raw && raw[key] !== undefined) {
+      (out as any)[key] = raw[key];
+    }
+  }
+  return out;
+}
+
 const getStmt = db.prepare('SELECT value FROM config WHERE key = ?');
 const setStmt = db.prepare(
   'INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
@@ -22,7 +36,7 @@ function readLocal(): FilterConfig {
   const row = getStmt.get(KEY) as { value: string } | undefined;
   if (!row) return { ...DEFAULT_FILTERS };
   try {
-    return { ...DEFAULT_FILTERS, ...JSON.parse(row.value) };
+    return sanitize(JSON.parse(row.value));
   } catch {
     return { ...DEFAULT_FILTERS };
   }
@@ -43,7 +57,7 @@ async function redisGet(): Promise<FilterConfig | null> {
     if (!res.ok) throw new Error(`Upstash GET ${res.status}`);
     const body = (await res.json()) as { result: string | null };
     if (!body.result) return null;
-    return { ...DEFAULT_FILTERS, ...JSON.parse(body.result) };
+    return sanitize(JSON.parse(body.result));
   } catch (err) {
     console.error('[configStore] Upstash GET failed, falling back to local cache:', err);
     return null;
