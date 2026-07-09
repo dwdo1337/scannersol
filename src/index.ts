@@ -1,6 +1,7 @@
 ﻿import dns from 'node:dns';
 import { startBot } from './bot.js';
 import { startWebhookServer } from './webhookServer.js';
+import { initFilters } from './configStore.js';
 
 // This host's IPv6 route to Cloudflare (which fronts api.helius.xyz) is
 // broken/unreachable, while IPv4 works fine. Helius's domain is dual-stack,
@@ -10,5 +11,7 @@ import { startWebhookServer } from './webhookServer.js';
 dns.setDefaultResultOrder('ipv4first');
 
 console.log('freshieTG starting - webhook ingestion + persistence + filters + telegram bot');
+
+await initFilters();
 startBot();
 startWebhookServer();
