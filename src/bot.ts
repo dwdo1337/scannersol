@@ -96,6 +96,25 @@ export function startBot() {
     bot!.sendMessage(msg.chat.id, `<pre>${dump}</pre>`, { parse_mode: 'HTML' });
   });
 
+  bot.onText(/\/rawshape/, (msg) => {
+    const samples = getFailedSamples();
+    if (samples.length === 0) {
+      bot!.sendMessage(msg.chat.id, 'No failed samples captured yet.');
+      return;
+    }
+    const tx = samples[0];
+    const shape = {
+      topLevelKeys: Object.keys(tx),
+      type: tx.type,
+      feePayer: tx.feePayer,
+      events: tx.events,
+      tokenTransfers: tx.tokenTransfers,
+      nativeTransfers: tx.nativeTransfers,
+    };
+    const dump = JSON.stringify(shape, null, 2).slice(0, 3500);
+    bot!.sendMessage(msg.chat.id, `<pre>${dump}</pre>`, { parse_mode: 'HTML' });
+  });
+
   bot.onText(/\/setfilters (\w+) (\S+)/, (msg, match) => {
     const key = match?.[1] as keyof FilterConfig;
     const raw = match?.[2];
