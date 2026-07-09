@@ -24,6 +24,16 @@ let activeLookups = 0;
 // etc. can vary slightly by tx type) - remove/lower this once confirmed.
 let rawLogsRemaining = 3;
 
+// In-memory ring buffer of raw payloads that failed extraction, so we can
+// inspect real shapes via Telegram (/rawsample) without Render dashboard
+// log access. Capped small - this is diagnostic only, not persisted.
+const failedSamples: any[] = [];
+const MAX_FAILED_SAMPLES = 5;
+
+export function getFailedSamples() {
+  return failedSamples;
+}
+
 function extractSwap(tx: any): { signature: string; buyer: string; mint: string; solIn: number } | null {
   try {
     const signature: string | undefined = tx.signature;
@@ -67,6 +77,9 @@ export function startWebhookServer() {
       const swap = extractSwap(tx);
       if (!swap) {
         bumpExtractFailed();
+        if (failedSamples.length < MAX_FAILED_SAMPLES) {
+          failedSamples.push(tx);
+        }
         continue;
       }
 

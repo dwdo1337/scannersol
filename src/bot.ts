@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } from './config.js';
 import { loadFilters, saveFilters } from './configStore.js';
 import { FilterConfig } from './filters.js';
+import { getFailedSamples } from './webhookServer.js';
 
 let bot: TelegramBot | null = null;
 let stats = {
@@ -83,6 +84,16 @@ export function startBot() {
     bot!.sendMessage(msg.chat.id, `<pre>${JSON.stringify(cfg, null, 2)}</pre>`, {
       parse_mode: 'HTML',
     });
+  });
+
+  bot.onText(/\/rawsample/, (msg) => {
+    const samples = getFailedSamples();
+    if (samples.length === 0) {
+      bot!.sendMessage(msg.chat.id, 'No failed samples captured yet.');
+      return;
+    }
+    const dump = JSON.stringify(samples[0], null, 2).slice(0, 3500);
+    bot!.sendMessage(msg.chat.id, `<pre>${dump}</pre>`, { parse_mode: 'HTML' });
   });
 
   bot.onText(/\/setfilters (\w+) (\S+)/, (msg, match) => {
