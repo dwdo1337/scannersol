@@ -1,0 +1,10 @@
+﻿node_modules/
+dist/
+.env
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+bot.log
+bot.err.log
+*.log
