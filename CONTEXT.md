@@ -136,6 +136,27 @@ Status log for what's actually true today.
    api.helius.xyz (Cloudflare-fronted) is broken while IPv4 works; Node's
    fetch sometimes raced into the dead IPv6 path -> ETIMEDOUT. Fixed with
    `dns.setDefaultResultOrder('ipv4first')` at the top of index.ts.
+8. **extractSwap() used the wrong field (root cause of 0 matches after
+   webhook went live)**: original code read `tx.events?.swap`, but for
+   Pump.fun/PumpSwap transactions Helius returns `events: {}` (empty) —
+   this field is populated for some program types but not these two.
+   99.4% of webhook deliveries were silently dropped as "extract failed"
+   because of this. Confirmed via a real payload dump (/rawshape
+   Telegram command, added specifically to debug this without Render
+   dashboard log access): the actual SOL leg of a Pump.fun/PumpSwap trade
+   comes through as a **tokenTransfer with mint =
+   So11111111111111111111111111111111111111112 (wrapped SOL)**, not a
+   plain native transfer and not events.swap.nativeInput. Fixed by
+   rewriting extractSwap() to: buyer = tx.feePayer; tokenIn = the
+   tokenTransfer where toUserAccount===buyer and mint !== WSOL; solIn =
+   the tokenTransfer where fromUserAccount===buyer and mint === WSOL
+   (tokenAmount is already human-readable, no /1e9 needed - Helius
+   pre-applies decimals). Falls back to nativeTransfers if no wrapped-SOL
+   leg is found. Committed 2026-07-09 (commit 3dddd24). **If extraction
+   ever silently breaks again, check /rawshape FIRST before assuming the
+   filter logic is broken** - this exact failure mode (extractFailed count
+   climbing, freshPassed/matched stuck at 0) has now happened once and
+   cost significant debugging time assuming the bug was downstream.
 
 ## Data sources
 - Helius Enhanced Webhooks — primary ingestion (SWAP type, Pump.fun +
@@ -180,6 +201,15 @@ built-in — no native deps). dotenv for env vars.
 - [next] Confirm live alerts actually flowing: ask user to run /status in
   Telegram (bot runs in polling mode, reachable independent of webhook
   traffic) and watch for seen/matched counts climbing
+- [done] Root-caused and fixed the extractSwap() bug (see "Known past
+  bugs" #8) — 99.4% of webhook deliveries were being silently dropped.
+  Fix pushed 2026-07-09 (commit 3dddd24). Awaiting Render redeploy +
+  fresh /status check to confirm freshPassed/matched start climbing.
+- [next] If freshPassed still stays near 0 after this fix, check whether
+  maxTxCount=5 default is simply too strict for real Pump.fun traffic
+  (most buys may go through bot/router wallets with long histories, not
+  literally brand-new wallets) - consider loosening default or accepting
+  that fresh (<5 tx) wallets are a genuinely small % of volume
 - [next] Wire minSolBalancePct into matchesFilters() (field exists,
   unused)
 - [next] Sybil-cluster detection (same funder -> multiple fresh wallets)

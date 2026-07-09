@@ -1,10 +1,20 @@
 // Simple token-bucket rate limiter shared across all Helius callers
 // (rpcCall, parseSwapTx, cexLabels) so we self-throttle instead of bursting
 // past Helius's own rate limits and generating 429s under heavy chain-wide
-// swap volume. This runs in-process; it's deliberately conservative since
-// 4 keys share one underlying account tier in practice.
-const MAX_TOKENS = 8; // burst allowance
-const REFILL_PER_SEC = 8; // steady-state requests/sec across the whole pool
+// swap volume. This runs in-process.
+//
+// Was hardcoded to 8 req/sec TOTAL regardless of key count - this was the
+// real bottleneck once extraction started working: with ~3900 swaps/min
+// candidates and only 8 rps of enrichment budget, well over 90% got
+// dropped by the concurrency cap before ever reaching a freshness check,
+// even though plenty of Helius quota was sitting unused across the other
+// 3 keys. Helius's free/dev tier is roughly ~10 req/sec PER KEY, so the
+// budget should scale with ENRICHMENT_KEYS.length, not be a flat constant.
+import { ENRICHMENT_KEYS } from './config.js';
+
+const PER_KEY_RPS = 8; // conservative vs Helius's ~10 rps/key free-tier limit
+const MAX_TOKENS = PER_KEY_RPS * ENRICHMENT_KEYS.length; // burst allowance
+const REFILL_PER_SEC = PER_KEY_RPS * ENRICHMENT_KEYS.length; // steady-state, whole pool
 
 let tokens = MAX_TOKENS;
 let lastRefill = Date.now();

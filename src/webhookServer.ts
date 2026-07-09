@@ -13,10 +13,13 @@ import { bumpSeen, bumpDropped, bumpExtractFailed } from './bot.js';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? '';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
-// Same reasoning as the old WSS path: freshness/funding lookups still cost
-// real Helius RPC calls, so still cap how many we run concurrently and
-// drop the rest rather than queue forever.
-const MAX_CONCURRENT_LOOKUPS = 6;
+// The rate limiter (rateLimiter.ts) is the real throttle now - it scales
+// with ENRICHMENT_KEYS.length. This concurrency cap just bounds how many
+// swaps can be "in flight" waiting on that limiter at once, so it should
+// be generous rather than the actual bottleneck. Raised from 6 (which was
+// dropping >90% of valid candidates under real volume even though the
+// rate limiter had unused headroom).
+const MAX_CONCURRENT_LOOKUPS = 30;
 let activeLookups = 0;
 
 // Log the raw shape of the first few webhook deliveries so we can confirm
