@@ -1,4 +1,4 @@
-﻿// One-off script: registers (or updates) a Helius Enhanced Webhook pointed
+// One-off script: registers (or updates) a Helius Enhanced Webhook pointed
 // at the deployed Render URL. Run manually after deploying, once you know
 // the live URL: node scripts/registerWebhook.mjs https://your-app.onrender.com
 //
@@ -9,7 +9,7 @@ import 'dotenv/config';
 const PUMPFUN = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMPSWAP = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 
-const heliusKey = process.env.HELIUS_KEY_1;
+const heliusKey = process.env.HELIUS_KEY_3;
 const webhookSecret = process.env.WEBHOOK_SECRET;
 const baseUrl = process.argv[2];
 
