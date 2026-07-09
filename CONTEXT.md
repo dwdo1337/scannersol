@@ -210,9 +210,42 @@ built-in — no native deps). dotenv for env vars.
   (most buys may go through bot/router wallets with long histories, not
   literally brand-new wallets) - consider loosening default or accepting
   that fresh (<5 tx) wallets are a genuinely small % of volume
-- [next] Wire minSolBalancePct into matchesFilters() (field exists,
-  unused)
-- [next] Sybil-cluster detection (same funder -> multiple fresh wallets)
+- [done] **Rate limiter was hardcoded to 8 req/sec TOTAL** regardless of
+  having 4 Helius keys - this became the real bottleneck the moment
+  extraction started working: ~3900 swaps/min of valid candidates but
+  only 8rps of enrichment budget meant >90% got dropped by the
+  concurrency cap (which was ALSO too low at 6) before ever reaching a
+  freshness check, even with 3 keys' worth of quota sitting unused. Fixed
+  by scaling rateLimiter.ts's token bucket with ENRICHMENT_KEYS.length
+  (~8 rps/key x 4 keys = 32 rps pool) and raising the webhook
+  concurrency cap from 6 to 30 so the rate limiter (not the admission
+  cap) is the actual throttle. Pushed 2026-07-09 (commit d47d0d0).
+  Awaiting fresh /status to confirm dropped-count falls and
+  freshPassed/matched climb meaningfully.
+- [done] **FIRST REAL LIVE ALERT CONFIRMED** 2026-07-09 ~13:38: wallet
+  7unpg1Li6MJyany2g1JVtmHdwmeeQqSG4ZcLMhX5dedS bought mint
+  8kwzh8fMdFcZzLpbV9NR8zfq9MtNkkqhEhU2PV4DQZB1, tx_count=1, age=1m,
+  buy=0.001 SOL, funded by "Coinbase Hot Wallet 9". Full pipeline
+  (webhook -> extract -> freshness -> funding -> CEX label -> filter ->
+  Telegram) confirmed working end-to-end for the first time.
+- [IMPORTANT/next] **Render free tier has an ephemeral filesystem** -
+  freshie.db (wallet cache, alert dedupe, saved FilterConfig) gets wiped
+  on every redeploy/restart. This means /setfilters changes do NOT
+  survive a push+redeploy right now. Confirmed by /status resetting to
+  uptime=0/1m repeatedly right after each git push in this session.
+  Before relying on persisted filter tuning, either (a) add Render's
+  persistent disk add-on (small paid tier, mounts a durable volume for
+  freshie.db), or (b) move config specifically (not wallet
+  cache/dedupe, those are fine to lose) to something durable - e.g. a
+  free external Postgres/Redis, or even just re-applying /setfilters
+  after every deploy as a manual step until this is fixed properly.
+- [next] Currently tuning filters live via Telegram: dust filter
+  (minBuySol) being added since the first alert was a 0.001 SOL buy;
+  deciding whether requireCexFunded should be true (stricter, high
+  confidence only) or false (more volume while calibrating).
+- [planned, later] User wants a paywall gate (pay with SOL or USDC) in
+  front of bot access eventually - parked until detection/filtering is
+  tuned to satisfaction. Not started.
 - [next] Consider deleting/checking old bot.log, bot.err.log, bot_out.log,
   bot_err.log files locally — they're from dead local WSS test runs and
   could confuse future debugging if mistaken for production logs
