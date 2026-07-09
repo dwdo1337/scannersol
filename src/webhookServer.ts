@@ -34,21 +34,36 @@ export function getFailedSamples() {
   return failedSamples;
 }
 
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
 function extractSwap(tx: any): { signature: string; buyer: string; mint: string; solIn: number } | null {
   try {
     const signature: string | undefined = tx.signature;
-    const swapEvent = tx.events?.swap;
-    if (!signature || !swapEvent) return null;
+    const buyer: string | undefined = tx.feePayer;
+    if (!signature || !buyer) return null;
 
-    const buyer: string | undefined = tx.feePayer ?? swapEvent.tokenOutputs?.[0]?.userAccount;
-    const mint: string | undefined = swapEvent.tokenOutputs?.[0]?.mint;
-    const lamportsIn: number | undefined = swapEvent.nativeInput?.amount
-      ? Number(swapEvent.nativeInput.amount)
-      : undefined;
+    const tokenTransfers: any[] = tx.tokenTransfers ?? [];
+    const nativeTransfers: any[] = tx.nativeTransfers ?? [];
 
-    if (!buyer || !mint || lamportsIn == null) return null;
+    // The token the buyer actually received (not the wrapped-SOL leg).
+    // Pump.fun/PumpSwap route the SOL side through a wrapped-SOL token
+    // transfer rather than events.swap (which comes back empty {} for
+    // these program types) or a plain native transfer.
+    const tokenIn = tokenTransfers.find(
+      (t) => t.toUserAccount === buyer && t.mint !== WSOL_MINT,
+    );
+    if (!tokenIn) return null;
 
-    return { signature, buyer, mint, solIn: lamportsIn / 1e9 };
+    // SOL spent: usually a wrapped-SOL tokenTransfer out of the buyer;
+    // fall back to a plain native transfer in case some route uses that.
+    const wsolOut = tokenTransfers.find(
+      (t) => t.fromUserAccount === buyer && t.mint === WSOL_MINT,
+    );
+    const nativeOut = nativeTransfers.find((t) => t.fromUserAccount === buyer);
+    const solIn = wsolOut?.tokenAmount ?? (nativeOut ? nativeOut.amount / 1e9 : undefined);
+    if (solIn == null || solIn <= 0) return null;
+
+    return { signature, buyer, mint: tokenIn.mint, solIn };
   } catch {
     return null;
   }
