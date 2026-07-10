@@ -145,6 +145,13 @@ function fmtVal(v: number | string | boolean | null): string {
   return String(v);
 }
 
+// BOLT-style traffic-light dot for on/off state, so a toggle reads at a
+// glance without parsing text - green means "requirement active", red
+// means "not required". Used on the button label itself.
+function dot(v: boolean): string {
+  return v ? '🟢' : '🔴';
+}
+
 function mainText(): string {
   return (
     '<b>freshieTG</b>\n' +
@@ -160,6 +167,10 @@ function mainKeyboard() {
       [
         { text: '⚙️ Filters', callback_data: 'menu_filters' },
         { text: '📊 Status', callback_data: 'menu_status' },
+      ],
+      [
+        { text: '🎚 Presets', callback_data: 'menu_presets' },
+        { text: '🚦 Score gate', callback_data: 'menu_score' },
       ],
       [{ text: '❓ Help', callback_data: 'menu_help' }],
     ],
@@ -204,7 +215,7 @@ function categoryKeyboard(cfg: FilterConfig, numericFields: (keyof FilterConfig)
     );
   }
   for (const f of boolFields) {
-    rows.push([{ text: `${FIELD_LABEL[f]}: ${fmtVal(cfg[f] as any)}`, callback_data: `bool_toggle_${f}` }]);
+    rows.push([{ text: `${dot(Boolean(cfg[f]))} ${FIELD_LABEL[f]}`, callback_data: `bool_toggle_${f}` }]);
   }
   rows.push([{ text: '‹ Back to filters', callback_data: 'menu_filters' }]);
   return { inline_keyboard: rows };
@@ -225,7 +236,7 @@ function fundingSrcKeyboard(cfg: FilterConfig) {
   for (let i = 0; i < KNOWN_EXCHANGES.length; i += 2) {
     rows.push(
       KNOWN_EXCHANGES.slice(i, i + 2).map((ex) => ({
-        text: `${selected.has(ex.toLowerCase()) ? '✅' : '▫️'} ${ex}`,
+        text: `${dot(selected.has(ex.toLowerCase()))} ${ex}`,
         callback_data: `fund_toggle_${ex}`,
       })),
     );
