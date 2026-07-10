@@ -1,16 +1,19 @@
-﻿// Core "is this swap worth alerting on" pipeline. Extracted out of index.ts
+// Core "is this swap worth alerting on" pipeline. Extracted out of index.ts
 // so both the webhook receiver (Render, production) and, if ever needed
 // again, the raw WSS feed (feed.ts, local fallback) can share the exact
 // same freshness/funding/filter/alert logic.
 import { checkFreshness } from './freshness.js';
 import { resolveFunding } from './funding.js';
-import { matchesFilters } from './filters.js';
+import { matchesFilters, MatchInput } from './filters.js';
 import { sendAlert, formatAlert } from './telegram.js';
 import { loadFilters } from './configStore.js';
 import { getCachedWallet, saveWalletCache } from './walletCache.js';
 import { alreadyAlerted, markAlerted } from './dedupe.js';
 import { allowAlert } from './rateLimit.js';
 import { bumpMatched, bumpFreshPassed, bumpFundingChecked } from './bot.js';
+import { getTokenSafety } from './tokenSafety.js';
+import { recordAndGetClusterSize, recordAndGetBuyRank } from './clusterTracker.js';
+import { computeScore } from './scoring.js';
 
 export interface SwapEvent {
   signature: string;
@@ -34,20 +37,16 @@ export async function handleSwap(swap: SwapEvent) {
     let oldestSigs: string[] = [];
 
     if (cached && cached.funded_resolved !== 0) {
-      // fully trustworthy cache hit - freshness AND funding both settled
       txCount = cached.tx_count ?? 0;
       firstSeen = cached.first_seen;
     } else {
-      // either no cache entry, or funding lookup was left unresolved last
-      // time (transient failure) - re-derive freshness so we have
-      // oldestSigs to retry the funding lookup with.
       const fresh = await checkFreshness(swap.buyer, cfg.maxTxCount);
       txCount = fresh.txCount;
       firstSeen = fresh.firstSeen;
       oldestSigs = fresh.oldestFirstSignatures;
     }
 
-    if (txCount >= cfg.maxTxCount) return; // not fresh, skip expensive funding lookup
+    if (txCount >= cfg.maxTxCount) return; // not fresh, skip expensive lookups
     bumpFreshPassed();
 
     const nowSec = Date.now() / 1000;
@@ -57,10 +56,6 @@ export async function handleSwap(swap: SwapEvent) {
     let fundedBy = cached?.funded_by ?? null;
     let fundedAt = cached?.funded_at ?? null;
 
-    // Re-run the funding/CEX lookup if we have no cache entry, OR if the
-    // cached entry's funding lookup was never actually resolved (e.g. it
-    // hit a 429 last time) - otherwise a transient failure gets baked in
-    // as a permanent false negative for the rest of the cache TTL.
     const needsFundingLookup = !cached || cached.funded_resolved === 0;
     bumpFundingChecked();
 
@@ -80,14 +75,38 @@ export async function handleSwap(swap: SwapEvent) {
       });
     }
 
-    const isMatch = matchesFilters(
-      { txCount, walletAgeMin, buySol: swap.solIn, cexLabel, fundedAt },
-      cfg,
-    );
+    // ---- token-side safety (mint/freeze authority, holders, liquidity) ----
+    const safety = await getTokenSafety(swap.mint);
+
+    // ---- cluster / buy-rank momentum signals ----
+    const clusterSize = recordAndGetClusterSize(swap.mint, swap.buyer, fundedBy, cfg.clusterWindowMin);
+    const buyRank = recordAndGetBuyRank(swap.mint, swap.buyer);
+
+    const scoreInput: Omit<MatchInput, 'score'> = {
+      txCount,
+      walletAgeMin,
+      buySol: swap.solIn,
+      cexLabel,
+      fundedAt,
+      buyRank,
+      poolImpactPct: null, // reserved: needs pool depth at time of buy, not yet wired
+      mintRevoked: safety.mintRevoked,
+      freezeRevoked: safety.freezeRevoked,
+      topHolderPct: safety.topHolderPct,
+      devHolderPct: safety.devHolderPct,
+      liquidityUsd: safety.liquidityUsd,
+      tokenAgeSec: safety.tokenAgeSec,
+      clusterSize,
+    };
+    const scoreBreakdown = computeScore(scoreInput);
+    const matchInput: MatchInput = { ...scoreInput, score: scoreBreakdown.total };
+
+    const isMatch = matchesFilters(matchInput, cfg);
 
     console.log(
       `[check] ${swap.buyer.slice(0, 6)}.. tx=${txCount} age=${walletAgeMin?.toFixed(0)}m ` +
-        `buy=${swap.solIn.toFixed(3)}SOL cex=${cexLabel ?? 'none'} match=${isMatch}`,
+        `buy=${swap.solIn.toFixed(3)}SOL cex=${cexLabel ?? 'none'} score=${scoreBreakdown.total} ` +
+        `cluster=${clusterSize} rank=${buyRank} match=${isMatch}`,
     );
 
     if (!isMatch) return;
@@ -108,6 +127,11 @@ export async function handleSwap(swap: SwapEvent) {
         walletAgeMin,
         buySol: swap.solIn,
         cexLabel,
+        fundedAt,
+        buyRank,
+        clusterSize,
+        score: scoreBreakdown,
+        safety,
       }),
     );
   } finally {
