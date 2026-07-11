@@ -3,6 +3,7 @@ import { TELEGRAM_BOT_TOKEN } from './config.js';
 import { loadFilters, saveFilters } from './configStore.js';
 import { DEFAULT_FILTERS, FilterConfig } from './filters.js';
 import { getFailedSamples } from './webhookServer.js';
+import { TELEGRAM_CHAT_ID } from './config.js';
 
 let bot: TelegramBot | null = null;
 let stats = {
@@ -138,6 +139,17 @@ const PRESETS: Record<string, Partial<FilterConfig>> = {
 };
 
 const awaitingInput = new Map<number, { field: keyof FilterConfig; menuMessageId: number }>();
+
+// Single-admin gate: only the account whose chat ID matches TELEGRAM_CHAT_ID
+// (i.e. Sir) may open the config menu or mutate filters. Everyone else is
+// a future whitelisted/paying user once that system exists - for now they
+// get a plain, non-informative decline so the bot doesn't look "broken",
+// it looks intentionally closed.
+function isAdmin(chatId: number): boolean {
+  return String(chatId) === TELEGRAM_CHAT_ID;
+}
+
+const NOT_OPEN_TEXT = 'This bot is not open to the public yet. Check back soon.';
 
 function fmtVal(v: number | string | boolean | null): string {
   if (v === null || v === undefined) return 'off';
@@ -319,6 +331,10 @@ export function startBot() {
     .catch((err) => console.error('[telegram] failed to register command menu:', err));
 
   bot.onText(/\/start/, (msg) => {
+    if (!isAdmin(msg.chat.id)) {
+      bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {});
+      return;
+    }
     bot!.sendMessage(msg.chat.id, mainText(), { parse_mode: 'HTML', reply_markup: mainKeyboard() });
   });
 
@@ -331,6 +347,7 @@ export function startBot() {
     const messageId = query.message?.message_id;
     if (!chatId || !messageId) return;
     bot!.answerCallbackQuery(query.id).catch(() => {});
+    if (!isAdmin(chatId)) return;
     const data = query.data ?? '';
     if (!data.startsWith('edit_')) awaitingInput.delete(chatId);
 
@@ -453,6 +470,7 @@ export function startBot() {
   // Typed replies for numeric field edits opened via the inline "edit_" buttons above.
   bot.on('message', (msg) => {
     const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return;
     const pending = awaitingInput.get(chatId);
     if (!pending || !msg.text) return;
     if (msg.text.startsWith('/')) return; // let onText handlers deal with commands
@@ -491,10 +509,12 @@ export function startBot() {
   });
 
   bot.onText(/\/status/, (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     bot!.sendMessage(msg.chat.id, statusText(), { parse_mode: 'HTML' });
   });
 
   bot.onText(/\/getfilters/, (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     const cfg = loadFilters();
     const lines = (Object.keys(FIELD_LABEL) as (keyof FilterConfig)[])
       .map((f) => `${FIELD_LABEL[f]}: <b>${fmtVal(cfg[f] as any)}</b>`)
@@ -506,6 +526,7 @@ export function startBot() {
   });
 
   bot.onText(/\/setfilters (\S+) (\S+)/, (msg, match) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     if (!match) return;
     const field = match[1] as keyof FilterConfig;
     const valueRaw = match[2].toLowerCase();
@@ -531,6 +552,7 @@ export function startBot() {
   });
 
   bot.onText(/\/setfunding (.+)/, (msg, match) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     if (!match) return;
     const list = match[1]
       .split(',')
@@ -543,6 +565,7 @@ export function startBot() {
   });
 
   bot.onText(/\/resetfunding/, (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     const cfg = loadFilters();
     cfg.allowedFundingSources = null;
     saveFilters(cfg);
@@ -550,6 +573,7 @@ export function startBot() {
   });
 
   bot.onText(/\/resetfilters/, (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     saveFilters({ ...DEFAULT_FILTERS });
     bot!.sendMessage(msg.chat.id, 'Filters reset to defaults.');
   });
