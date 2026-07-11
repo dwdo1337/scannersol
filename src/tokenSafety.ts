@@ -19,6 +19,7 @@ export interface TokenSafety {
   devHolderPct: number | null;   // best-effort: largest single non-LP holder %
   liquidityUsd: number | null;
   tokenAgeSec: number | null;
+  solPriceUsd: number | null;
 }
 
 const cache = new Map<string, { data: TokenSafety; expires: number }>();
@@ -81,19 +82,24 @@ async function fetchDevHolderPct(mint: string, totalSupply: bigint): Promise<num
   return Number((largest * 10000n) / totalSupply) / 100;
 }
 
-async function fetchDexScreenerData(mint: string): Promise<{ liquidityUsd: number | null; tokenAgeSec: number | null }> {
+async function fetchDexScreenerData(mint: string): Promise<{ liquidityUsd: number | null; tokenAgeSec: number | null; solPriceUsd: number | null }> {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
-    if (!res.ok) return { liquidityUsd: null, tokenAgeSec: null };
+    if (!res.ok) return { liquidityUsd: null, tokenAgeSec: null, solPriceUsd: null };
     const body: any = await res.json();
     const pairs: any[] = body?.pairs ?? [];
-    if (!pairs.length) return { liquidityUsd: null, tokenAgeSec: null };
+    if (!pairs.length) return { liquidityUsd: null, tokenAgeSec: null, solPriceUsd: null };
     const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
     const liquidityUsd = best.liquidity?.usd ?? null;
     const tokenAgeSec = best.pairCreatedAt ? (Date.now() - best.pairCreatedAt) / 1000 : null;
-    return { liquidityUsd, tokenAgeSec };
+    // priceUsd is token price in USD, priceNative is token price in SOL (quote token) -
+    // dividing recovers SOL/USD from the same pair with no extra request.
+    const priceUsd = best.priceUsd ? Number(best.priceUsd) : null;
+    const priceNative = best.priceNative ? Number(best.priceNative) : null;
+    const solPriceUsd = priceUsd != null && priceNative && priceNative > 0 ? priceUsd / priceNative : null;
+    return { liquidityUsd, tokenAgeSec, solPriceUsd };
   } catch {
-    return { liquidityUsd: null, tokenAgeSec: null };
+    return { liquidityUsd: null, tokenAgeSec: null, solPriceUsd: null };
   }
 }
 
@@ -108,6 +114,7 @@ export async function getTokenSafety(mint: string): Promise<TokenSafety> {
     devHolderPct: null,
     liquidityUsd: null,
     tokenAgeSec: null,
+    solPriceUsd: null,
   };
 
   try {
@@ -129,6 +136,7 @@ export async function getTokenSafety(mint: string): Promise<TokenSafety> {
       devHolderPct,
       liquidityUsd: dex.liquidityUsd,
       tokenAgeSec: dex.tokenAgeSec,
+      solPriceUsd: dex.solPriceUsd,
     };
     cache.set(mint, { data, expires: Date.now() + TTL_MS });
     return data;

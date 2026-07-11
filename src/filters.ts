@@ -8,7 +8,8 @@ export interface FilterConfig {
   minBuySol: number | null;
   maxBuySol: number | null;
   minBuyRank: number | null; // only alert if buyer is among first N buyers of the token
-  maxPoolImpactPct: number | null; // buy size as % of pool depth
+  minPoolImpactPct: number | null; // buy size as % of pool depth (floor)
+  maxPoolImpactPct: number | null; // buy size as % of pool depth (ceiling)
 
   // ---- funding trail ----
   allowedFundingSources: string[] | null;
@@ -42,6 +43,7 @@ export const DEFAULT_FILTERS: FilterConfig = {
   minBuySol: null,
   maxBuySol: null,
   minBuyRank: null,
+  minPoolImpactPct: null,
   maxPoolImpactPct: null,
   allowedFundingSources: null,
   minMinutesSinceFunding: null,
@@ -91,6 +93,9 @@ export function matchesFilters(input: MatchInput, cfg: FilterConfig): boolean {
 
   if (cfg.minBuyRank != null) {
     if (input.buyRank == null || input.buyRank > cfg.minBuyRank) return false;
+  }
+  if (cfg.minPoolImpactPct != null) {
+    if (input.poolImpactPct == null || input.poolImpactPct < cfg.minPoolImpactPct) return false;
   }
   if (cfg.maxPoolImpactPct != null) {
     if (input.poolImpactPct == null || input.poolImpactPct > cfg.maxPoolImpactPct) return false;

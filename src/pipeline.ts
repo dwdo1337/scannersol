@@ -89,7 +89,10 @@ export async function handleSwap(swap: SwapEvent) {
       cexLabel,
       fundedAt,
       buyRank,
-      poolImpactPct: null, // reserved: needs pool depth at time of buy, not yet wired
+      poolImpactPct:
+        safety.liquidityUsd != null && safety.liquidityUsd > 0 && safety.solPriceUsd != null
+          ? ((swap.solIn * safety.solPriceUsd) / safety.liquidityUsd) * 100
+          : null, // buy size (USD) as % of pool liquidity depth at check time
       mintRevoked: safety.mintRevoked,
       freezeRevoked: safety.freezeRevoked,
       topHolderPct: safety.topHolderPct,

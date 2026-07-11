@@ -51,7 +51,7 @@ setInterval(() => {
 // ---- field metadata, grouped like a real product's Settings screen
 // (freshness / funding / token safety / cluster) instead of one flat list ----
 const FRESHNESS_FIELDS: (keyof FilterConfig)[] = ['maxTxCount', 'minWalletAgeMin', 'maxWalletAgeMin'];
-const BUY_FIELDS: (keyof FilterConfig)[] = ['minBuySol', 'maxBuySol', 'minBuyRank'];
+const BUY_FIELDS: (keyof FilterConfig)[] = ['minBuySol', 'maxBuySol', 'minBuyRank', 'minPoolImpactPct', 'maxPoolImpactPct'];
 const FUNDING_FIELDS: (keyof FilterConfig)[] = ['minMinutesSinceFunding', 'maxMinutesSinceFunding'];
 const SAFETY_NUMERIC_FIELDS: (keyof FilterConfig)[] = [
   'maxTopHolderPct',
@@ -81,6 +81,8 @@ const FIELD_LABEL: Record<string, string> = {
   minBuySol: 'Min buy (SOL)',
   maxBuySol: 'Max buy (SOL)',
   minBuyRank: 'Max buy rank (1st..Nth buyer)',
+  minPoolImpactPct: 'Min buy size (% of pool)',
+  maxPoolImpactPct: 'Max buy size (% of pool)',
   minMinutesSinceFunding: 'Min mins since funding',
   maxMinutesSinceFunding: 'Max mins since funding',
   maxTopHolderPct: 'Max top-10 holder %',
@@ -103,6 +105,8 @@ const FIELD_DESC: Record<string, string> = {
   minBuySol: 'Ignore buys smaller than this many SOL - cuts out dust transactions.',
   maxBuySol: 'Ignore buys larger than this many SOL - optional ceiling if you only want small/medium buys.',
   minBuyRank: 'Only alert if the wallet is among the first N buyers of the token (1 = first buyer ever).',
+  minPoolImpactPct: 'Buy size as a % of pool liquidity depth (USD value of the buy vs current pool liquidity). Must be at least this % - filters out insignificant buys.',
+  maxPoolImpactPct: 'Buy size as a % of pool liquidity depth. Must be under this % - filters out buys so large they are probably the dev/insider or will move price too much to matter.',
   minMinutesSinceFunding: 'Wallet must have been funded at least this many minutes before the buy.',
   maxMinutesSinceFunding: 'Wallet must have been funded within this many minutes of the buy - tight windows read as "funded specifically to make this trade".',
   maxTopHolderPct: 'Reject the token if its top 10 holders control more than this % of supply - high concentration = easy rug.',
