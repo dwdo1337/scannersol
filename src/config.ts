@@ -1,11 +1,11 @@
 import 'dotenv/config';
 
-const ALL_KEYS = [
-  process.env.HELIUS_KEY_1,
-  process.env.HELIUS_KEY_2,
-  process.env.HELIUS_KEY_3,
-  process.env.HELIUS_KEY_4,
-].filter((k): k is string => !!k);
+// Reads HELIUS_KEY_1, HELIUS_KEY_2, ... up to HELIUS_KEY_20 (generous
+// ceiling - env vars that don't exist are filtered out below). Adding a
+// 5th/6th/etc key going forward is just "add the env var on Render", no
+// code change needed, unlike the old fixed 1-4 list.
+const ALL_KEYS = Array.from({ length: 20 }, (_, i) => process.env[`HELIUS_KEY_${i + 1}`])
+  .filter((k): k is string => !!k);
 
 if (ALL_KEYS.length === 0) {
   throw new Error('No Helius keys found in .env (HELIUS_KEY_1..4)');
