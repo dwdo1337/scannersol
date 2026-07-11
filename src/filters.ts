@@ -1,6 +1,7 @@
 export interface FilterConfig {
   // ---- wallet freshness ----
   maxTxCount: number;        // e.g. 5 -> "under 5 transactions"
+  minWalletAgeMin: number | null; // e.g. 1 -> wallet must be at least 1 min old (filters out same-block noise)
   maxWalletAgeMin: number | null; // e.g. 60 -> wallet first seen < 60 min ago
 
   // ---- buy signal ----
@@ -36,6 +37,7 @@ export interface FilterConfig {
 
 export const DEFAULT_FILTERS: FilterConfig = {
   maxTxCount: 5,
+  minWalletAgeMin: null,
   maxWalletAgeMin: 60,
   minBuySol: null,
   maxBuySol: null,
@@ -78,6 +80,9 @@ export interface MatchInput {
 
 export function matchesFilters(input: MatchInput, cfg: FilterConfig): boolean {
   if (input.txCount >= cfg.maxTxCount) return false;
+  if (cfg.minWalletAgeMin != null && input.walletAgeMin != null) {
+    if (input.walletAgeMin < cfg.minWalletAgeMin) return false;
+  }
   if (cfg.maxWalletAgeMin != null && input.walletAgeMin != null) {
     if (input.walletAgeMin > cfg.maxWalletAgeMin) return false;
   }

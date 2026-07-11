@@ -49,7 +49,7 @@ setInterval(() => {
 
 // ---- field metadata, grouped like a real product's Settings screen
 // (freshness / funding / token safety / cluster) instead of one flat list ----
-const FRESHNESS_FIELDS: (keyof FilterConfig)[] = ['maxTxCount', 'maxWalletAgeMin'];
+const FRESHNESS_FIELDS: (keyof FilterConfig)[] = ['maxTxCount', 'minWalletAgeMin', 'maxWalletAgeMin'];
 const BUY_FIELDS: (keyof FilterConfig)[] = ['minBuySol', 'maxBuySol', 'minBuyRank'];
 const FUNDING_FIELDS: (keyof FilterConfig)[] = ['minMinutesSinceFunding', 'maxMinutesSinceFunding'];
 const SAFETY_NUMERIC_FIELDS: (keyof FilterConfig)[] = [
@@ -75,6 +75,7 @@ const NUMERIC_FIELDS: (keyof FilterConfig)[] = [
 
 const FIELD_LABEL: Record<string, string> = {
   maxTxCount: 'Max tx count',
+  minWalletAgeMin: 'Min wallet age (min)',
   maxWalletAgeMin: 'Max wallet age (min)',
   minBuySol: 'Min buy (SOL)',
   maxBuySol: 'Max buy (SOL)',
@@ -93,6 +94,32 @@ const FIELD_LABEL: Record<string, string> = {
   minScore: 'Min composite score',
   maxAlertsPerMin: 'Max alerts/min',
 };
+
+const FIELD_DESC: Record<string, string> = {
+  maxTxCount: 'Reject wallets with this many or more total transactions - keeps only wallets with very little on-chain history.',
+  minWalletAgeMin: 'Wallet must be at least this old. Filters out same-block/same-minute noise that is usually a bug or a bot, not a real fresh buyer.',
+  maxWalletAgeMin: 'Wallet must have been first seen more recently than this. Lower = stricter "brand new" requirement.',
+  minBuySol: 'Ignore buys smaller than this many SOL - cuts out dust transactions.',
+  maxBuySol: 'Ignore buys larger than this many SOL - optional ceiling if you only want small/medium buys.',
+  minBuyRank: 'Only alert if the wallet is among the first N buyers of the token (1 = first buyer ever).',
+  minMinutesSinceFunding: 'Wallet must have been funded at least this many minutes before the buy.',
+  maxMinutesSinceFunding: 'Wallet must have been funded within this many minutes of the buy - tight windows read as "funded specifically to make this trade".',
+  maxTopHolderPct: 'Reject the token if its top 10 holders control more than this % of supply - high concentration = easy rug.',
+  maxDevHolderPct: 'Reject the token if the single largest holder (usually the deployer) controls more than this % of supply.',
+  minLiquidityUsd: 'Reject the token if its liquidity pool is worth less than this in USD - thin liquidity means big slippage and easy manipulation.',
+  minTokenAgeSec: 'Token must have existed for at least this many seconds before the buy.',
+  maxTokenAgeSec: 'Token must be no older than this many seconds - keeps you focused on brand-new launches.',
+  requireMintRevoked: 'When on, only alert if the token creator has permanently given up the ability to mint new supply (mint authority revoked).',
+  requireFreezeRevoked: 'When on, only alert if the token creator has permanently given up the ability to freeze wallets/transfers (freeze authority revoked).',
+  minClusterSize: 'Only alert if at least this many other fresh wallets funded by the same source bought the same token - a sign of coordinated, non-organic buying.',
+  clusterWindowMin: 'Time window (minutes) used to group buys into the same "cluster" for the check above.',
+  minScore: 'Composite 0-100 score combining freshness, funding, safety and cluster signals. Set a floor here instead of tuning every field individually.',
+  maxAlertsPerMin: 'Hard cap on how many alerts the bot will send per minute, regardless of how many matches it finds - protects you from a spam flood during a busy period.',
+};
+
+function fieldDescBlock(fields: (keyof FilterConfig)[]): string {
+  return fields.map((f) => `• <b>${FIELD_LABEL[f] ?? f}</b> — ${FIELD_DESC[f] ?? 'no description yet'}`).join('\n');
+}
 
 const KNOWN_EXCHANGES = ['Binance', 'Coinbase', 'OKX', 'Bybit', 'Kraken', 'KuCoin', 'Gate.io', 'MEXC'];
 
@@ -169,6 +196,11 @@ function mainText(): string {
     '<b>freshieTG</b>\n' +
     'Fresh Solana wallet tracker — watches DEX activity chain-wide and ' +
     'alerts on freshly-funded wallets buying into safe-looking tokens.\n\n' +
+    '• <b>⚙️ Filters</b> — tune exactly which buys trigger an alert\n' +
+    '• <b>📊 Status</b> — pipeline uptime and live counters\n' +
+    '• <b>🎚 Presets</b> — one-tap starting points (conservative/balanced/aggressive)\n' +
+    '• <b>🚦 Score gate</b> — set the single composite-score floor for alerts\n' +
+    '• <b>❓ Help</b> — command reference\n\n' +
     'Pick a menu below.'
   );
 }
@@ -193,6 +225,13 @@ function filtersText(cfg: FilterConfig): string {
   return (
     `<b>⚙️ Alert Rules</b>\n` +
     `Score gate: <b>${fmtVal(cfg.minScore)}</b> • Max alerts/min: <b>${cfg.maxAlertsPerMin}</b>\n\n` +
+    `• <b>🧊 Freshness</b> — how new the wallet itself needs to be\n` +
+    `• <b>🐋 Buy signal</b> — size and rank of the buy itself\n` +
+    `• <b>💰 Funding</b> — timing between wallet funding and the buy\n` +
+    `• <b>🏦 Funding sources</b> — restrict to specific exchanges\n` +
+    `• <b>🪙 Token safety</b> — rug-resistance checks on the token\n` +
+    `• <b>🕸 Cluster</b> — coordinated/sybil buying detection\n` +
+    `• <b>🚦 Score gate</b> — single composite-score floor\n\n` +
     `Pick a category to tune, or jump to a preset.`
   );
 }
@@ -233,8 +272,9 @@ function categoryKeyboard(cfg: FilterConfig, numericFields: (keyof FilterConfig)
   return { inline_keyboard: rows };
 }
 
-function categoryText(title: string, desc: string): string {
-  return `<b>${title}</b>\n${desc}`;
+function categoryText(title: string, desc: string, fields: (keyof FilterConfig)[] = [], boolFields: (keyof FilterConfig)[] = []): string {
+  const descBlock = fieldDescBlock([...fields, ...boolFields]);
+  return `<b>${title}</b>\n${desc}${descBlock ? '\n\n' + descBlock : ''}`;
 }
 
 function fundingSrcText(cfg: FilterConfig): string {
@@ -363,33 +403,33 @@ export function startBot() {
 
     if (data === 'menu_freshness')
       return edit(
-        categoryText('🧊 Freshness', 'How new the wallet itself needs to be.'),
+        categoryText('🧊 Freshness', 'How new the wallet itself needs to be.', FRESHNESS_FIELDS),
         categoryKeyboard(loadFilters(), FRESHNESS_FIELDS),
       );
     if (data === 'menu_buy')
       return edit(
-        categoryText('🐋 Buy signal', 'Size and rank of the buy itself.'),
+        categoryText('🐋 Buy signal', 'Size and rank of the buy itself.', BUY_FIELDS),
         categoryKeyboard(loadFilters(), BUY_FIELDS),
       );
     if (data === 'menu_funding')
       return edit(
-        categoryText('💰 Funding window', 'Time between the wallet being funded and this buy — tight windows read as "cashed in specifically for this".'),
+        categoryText('💰 Funding window', 'Time between the wallet being funded and this buy — tight windows read as "cashed in specifically for this".', FUNDING_FIELDS),
         categoryKeyboard(loadFilters(), FUNDING_FIELDS),
       );
     if (data === 'menu_fundingsrc') return edit(fundingSrcText(loadFilters()), fundingSrcKeyboard(loadFilters()));
     if (data === 'menu_safety')
       return edit(
-        categoryText('🪙 Token safety', 'Rug-resistance checks on the token being bought, not the wallet.'),
+        categoryText('🪙 Token safety', 'Rug-resistance checks on the token being bought, not the wallet.', SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS),
         categoryKeyboard(loadFilters(), SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS),
       );
     if (data === 'menu_cluster')
       return edit(
-        categoryText('🕸 Cluster / sybil', 'Flags coordinated buying: same funder feeding multiple fresh wallets into one token.'),
+        categoryText('🕸 Cluster / sybil', 'Flags coordinated buying: same funder feeding multiple fresh wallets into one token.', CLUSTER_FIELDS),
         categoryKeyboard(loadFilters(), CLUSTER_FIELDS),
       );
     if (data === 'menu_score')
       return edit(
-        categoryText('🚦 Composite score', 'One 0-100 number combining freshness+funding+safety+cluster. Set a floor instead of tuning every field.'),
+        categoryText('🚦 Composite score', 'One 0-100 number combining freshness+funding+safety+cluster. Set a floor instead of tuning every field.', SCORE_FIELDS),
         categoryKeyboard(loadFilters(), SCORE_FIELDS),
       );
     if (data === 'menu_presets') return edit(presetsText(), presetsKeyboard());
@@ -443,7 +483,7 @@ export function startBot() {
       // Re-render whichever category owns this field so the toggle is visible immediately.
       if (SAFETY_BOOL_FIELDS.includes(field)) {
         return edit(
-          categoryText('🪙 Token safety', 'Rug-resistance checks on the token being bought, not the wallet.'),
+          categoryText('🪙 Token safety', 'Rug-resistance checks on the token being bought, not the wallet.', SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS),
           categoryKeyboard(cfg, SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS),
         );
       }
