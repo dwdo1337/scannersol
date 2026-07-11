@@ -438,7 +438,7 @@ export function startBot() {
       );
     if (data === 'menu_score')
       return edit(
-        categoryText('🚦 Composite score', 'One 0-100 number combining freshness+funding+safety+cluster. Set a floor instead of tuning every field.', SCORE_FIELDS),
+        categoryText('🚦 Composite score', 'Optional single dial that replaces tuning every field by hand.', SCORE_FIELDS),
         categoryKeyboard(loadFilters(), SCORE_FIELDS),
       );
     if (data === 'menu_presets') return edit(presetsText(), presetsKeyboard());
