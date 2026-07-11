@@ -34,24 +34,40 @@ export async function lookupCexLabel(address: string): Promise<CexLookupResult> 
 
   if (enhancedApiBreaker.isOpen()) return { label: null, resolved: false };
 
-  try {
+  // Retries across the whole key pool on a 429/network error before recording
+  // a failure - same fix parseSwapTx already got. Without this, a single
+  // exhausted key (very common - only 1 of 4 keys is currently under quota)
+  // immediately counts as a failure against the *shared* enhancedApiBreaker,
+  // which also gates parseSwapTx. Tripping it here silently stalls swap
+  // parsing too, so no notifications fire at all - not just missing labels.
+  let lastStatus: number | null = null;
+  for (let i = 0; i < ENRICHMENT_KEYS.length; i++) {
     const key = nextKey();
-    await acquireRateLimitToken();
-    const res = await fetch(
-      `https://api.helius.xyz/v1/wallet/${address}/identity?api-key=${key}`,
-    );
+    let res: Response;
+    try {
+      await acquireRateLimitToken();
+      res = await fetch(
+        `https://api.helius.xyz/v1/wallet/${address}/identity?api-key=${key}`,
+      );
+    } catch {
+      continue; // network error on this key - try next key before giving up
+    }
+
     if (res.status === 404) {
       enhancedApiBreaker.recordSuccess();
       cache.set(address, { label: null, expires: Date.now() + TTL_MS });
       return { label: null, resolved: true };
     }
-    if (!res.ok) {
-      // transient failure (e.g. 429 rate limit) - do NOT cache, do NOT treat as confirmed negative
-      enhancedApiBreaker.recordFailure();
-      return { label: null, resolved: false };
+    if (res.status === 429) {
+      lastStatus = 429;
+      continue; // this key is rate limited - try next key
     }
-    enhancedApiBreaker.recordSuccess();
+    if (!res.ok) {
+      lastStatus = res.status;
+      continue;
+    }
 
+    enhancedApiBreaker.recordSuccess();
     const data: any = await res.json();
     const category: string | undefined = data?.category;
     const name: string | undefined = data?.name;
@@ -60,8 +76,10 @@ export async function lookupCexLabel(address: string): Promise<CexLookupResult> 
 
     cache.set(address, { label, expires: Date.now() + TTL_MS });
     return { label, resolved: true };
-  } catch {
-    enhancedApiBreaker.recordFailure();
-    return { label: null, resolved: false }; // don't cache network errors
   }
+
+  // every key failed for this address - only NOW does it count against the
+  // shared breaker, same threshold semantics as parseSwapTx/rpcCall.
+  enhancedApiBreaker.recordFailure();
+  return { label: null, resolved: false }; // don't cache - transient (rate limit / network), not a confirmed negative
 }
