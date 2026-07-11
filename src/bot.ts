@@ -170,7 +170,7 @@ const PRESETS: Record<string, Partial<FilterConfig>> = {
   },
 };
 
-const awaitingInput = new Map<number, { field: keyof FilterConfig; menuMessageId: number }>();
+const awaitingInput = new Map<number, { field: keyof FilterConfig; menuMessageId: number; category: string | null }>();
 
 // Single-admin gate: only the account whose chat ID matches TELEGRAM_CHAT_ID
 // (i.e. Sir) may open the config menu or mutate filters. Everyone else is
@@ -257,6 +257,40 @@ function filtersKeyboard() {
   };
 }
 
+// Maps a filter field to the callback_data key of the category menu that
+// owns it, so we can jump back to the *specific* submenu (not the top-level
+// filters menu) after a typed value is set.
+function categoryFor(field: keyof FilterConfig): string | null {
+  if ((FRESHNESS_FIELDS as string[]).includes(field)) return 'menu_freshness';
+  if ((BUY_FIELDS as string[]).includes(field)) return 'menu_buy';
+  if ((FUNDING_FIELDS as string[]).includes(field)) return 'menu_funding';
+  if ((SAFETY_NUMERIC_FIELDS as string[]).includes(field) || (SAFETY_BOOL_FIELDS as string[]).includes(field)) return 'menu_safety';
+  if ((CLUSTER_FIELDS as string[]).includes(field)) return 'menu_cluster';
+  if ((SCORE_FIELDS as string[]).includes(field)) return 'menu_score';
+  return null;
+}
+
+// Renders the same {text, keyboard} pair as the menu_* callback handlers
+// below, keyed by category, so both the button flow and the typed-reply
+// flow (bot.on('message')) can rebuild the exact same submenu.
+function renderCategory(key: string, cfg: FilterConfig): { text: string; keyboard: any } | null {
+  switch (key) {
+    case 'menu_freshness':
+      return { text: categoryText('🧊 Freshness', 'How new the wallet itself needs to be.', FRESHNESS_FIELDS), keyboard: categoryKeyboard(cfg, FRESHNESS_FIELDS) };
+    case 'menu_buy':
+      return { text: categoryText('🐋 Buy signal', 'Size and rank of the buy itself.', BUY_FIELDS), keyboard: categoryKeyboard(cfg, BUY_FIELDS) };
+    case 'menu_funding':
+      return { text: categoryText('💰 Funding window', 'Time between the wallet being funded and this buy — tight windows read as "cashed in specifically for this".', FUNDING_FIELDS), keyboard: categoryKeyboard(cfg, FUNDING_FIELDS) };
+    case 'menu_safety':
+      return { text: categoryText('🪙 Token safety', 'Rug-resistance checks on the token being bought, not the wallet.', SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS), keyboard: categoryKeyboard(cfg, SAFETY_NUMERIC_FIELDS, SAFETY_BOOL_FIELDS) };
+    case 'menu_cluster':
+      return { text: categoryText('🕸 Cluster / sybil', 'Flags coordinated buying: same funder feeding multiple fresh wallets into one token.', CLUSTER_FIELDS), keyboard: categoryKeyboard(cfg, CLUSTER_FIELDS) };
+    case 'menu_score':
+      return { text: categoryText('🚦 Composite score', 'Optional single dial that replaces tuning every field by hand.', SCORE_FIELDS), keyboard: categoryKeyboard(cfg, SCORE_FIELDS) };
+    default:
+      return null;
+  }
+}
 // Generic category submenu builder: title, description, numeric fields to
 // show as toggle-to-edit buttons, plus optional boolean fields rendered as
 // on/off toggles (immediate flip, no typed input needed).
@@ -506,7 +540,7 @@ export function startBot() {
     if (data.startsWith('edit_')) {
       const field = data.slice('edit_'.length) as keyof FilterConfig;
       if (!NUMERIC_FIELDS.includes(field)) return;
-      awaitingInput.set(chatId, { field, menuMessageId: messageId });
+      awaitingInput.set(chatId, { field, menuMessageId: messageId, category: categoryFor(field) });
       const label = FIELD_LABEL[field] ?? field;
       const cfg = loadFilters();
       return bot!
@@ -548,15 +582,17 @@ export function startBot() {
       .sendMessage(chatId, `<b>${FIELD_LABEL[pending.field]}</b> set to <b>${fmtVal((cfg as any)[pending.field])}</b>.`, {
         parse_mode: 'HTML',
       })
-      .catch(() => {});
-
-    // Refresh the original menu message in place, if it's still the same one.
-    bot!
-      .editMessageText(filtersText(cfg), {
-        chat_id: chatId,
-        message_id: pending.menuMessageId,
-        parse_mode: 'HTML',
-        reply_markup: filtersKeyboard(),
+      .then(() => {
+        // Post the submenu the field actually lives in as a *new* message,
+        // sent after the confirmation above, instead of editing the old
+        // menu message in place (which left it stuck wherever it originally
+        // was in the chat, behind the confirmation). Falls back to the
+        // top-level filters menu if the field's category can't be resolved.
+        bot!.deleteMessage(chatId, pending.menuMessageId).catch(() => {}); // old menu is stale now; drop it instead of leaving it stuck mid-chat
+        const rendered = pending.category ? renderCategory(pending.category, cfg) : null;
+        const text = rendered ? rendered.text : filtersText(cfg);
+        const keyboard = rendered ? rendered.keyboard : filtersKeyboard();
+        return bot!.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: keyboard });
       })
       .catch(() => {});
   });
