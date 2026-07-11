@@ -4,6 +4,7 @@ import { loadFilters, saveFilters } from './configStore.js';
 import { DEFAULT_FILTERS, FilterConfig } from './filters.js';
 import { getFailedSamples } from './webhookServer.js';
 import { TELEGRAM_CHAT_ID } from './config.js';
+import { approveUser, revokeUser, listUsers, registerPending } from './userStore.js';
 
 let bot: TelegramBot | null = null;
 let stats = {
@@ -367,11 +368,19 @@ export function startBot() {
       { command: 'setfunding', description: 'Allowed CEX sources: /setfunding Binance,OKX' },
       { command: 'resetfunding', description: 'Clear funding-source restriction' },
       { command: 'resetfilters', description: 'Reset all filters to defaults' },
+      { command: 'approve', description: 'Whitelist a user: /approve <chat_id> [days]' },
+      { command: 'revoke', description: 'Remove a user: /revoke <chat_id>' },
+      { command: 'listusers', description: 'Show whitelist' },
     ])
     .catch((err) => console.error('[telegram] failed to register command menu:', err));
 
-  bot.onText(/\/start/, (msg) => {
+  bot.onText(/\/start(?:\s+(\S+))?/, (msg, match) => {
     if (!isAdmin(msg.chat.id)) {
+      // Track who has tried the bot, and the referral code they came in
+      // with if any (deep-link payload after /start), so the whitelist
+      // and future referral rewards have a real record to work from.
+      const refPayload = match?.[1]?.startsWith('ref_') ? match[1].slice('ref_'.length) : null;
+      registerPending(String(msg.chat.id), refPayload);
       bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {});
       return;
     }
@@ -616,6 +625,43 @@ export function startBot() {
     if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
     saveFilters({ ...DEFAULT_FILTERS });
     bot!.sendMessage(msg.chat.id, 'Filters reset to defaults.');
+  });
+
+  // ---- whitelist admin commands ----
+  bot.onText(/\/approve (\S+)(?:\s+(\d+))?/, (msg, match) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
+    if (!match) return;
+    const targetChatId = match[1];
+    const days = match[2] ? Number(match[2]) : null;
+    const u = approveUser(targetChatId, days);
+    const expiry = u.expiresAt ? new Date(u.expiresAt * 1000).toISOString().slice(0, 10) : 'never';
+    bot!.sendMessage(msg.chat.id, `Approved ${targetChatId} — expires: ${expiry}.`);
+    bot!.sendMessage(targetChatId, "You're approved. Send /start to begin.").catch(() => {});
+  });
+
+  bot.onText(/\/revoke (\S+)/, (msg, match) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
+    if (!match) return;
+    const u = revokeUser(match[1]);
+    bot!.sendMessage(msg.chat.id, u ? `Revoked ${match[1]}.` : `No such user: ${match[1]}.`);
+  });
+
+  bot.onText(/\/listusers/, (msg) => {
+    if (!isAdmin(msg.chat.id)) { bot!.sendMessage(msg.chat.id, NOT_OPEN_TEXT).catch(() => {}); return; }
+    const users = listUsers();
+    if (users.length === 0) {
+      bot!.sendMessage(msg.chat.id, 'No whitelist entries yet.');
+      return;
+    }
+    const lines = users
+      .slice(0, 50)
+      .map((u) => {
+        const expiry = u.expiresAt ? new Date(u.expiresAt * 1000).toISOString().slice(0, 10) : 'no expiry';
+        const ref = u.referredBy ? ` ref:${u.referredBy}` : '';
+        return `${u.chatId} — ${u.status} (${expiry})${ref}`;
+      })
+      .join('\n');
+    bot!.sendMessage(msg.chat.id, `<b>Whitelist (${users.length})</b>\n${lines}`, { parse_mode: 'HTML' });
   });
 
   console.log('[telegram] bot polling started');

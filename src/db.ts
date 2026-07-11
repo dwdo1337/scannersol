@@ -47,6 +47,15 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS users (
+    chat_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    tier TEXT,
+    expires_at INTEGER,
+    referred_by TEXT,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 export default db;
